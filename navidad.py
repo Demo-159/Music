@@ -171,6 +171,58 @@ def sleigh_shake(t, dur, amp=1.0):
         sleigh(t + k / 28, amp * (0.3 + 0.7 * env))
 
 
+# ---------------------------------------------------------------- coro (síntesis por formantes)
+# (frecuencia, ancho de banda, ganancia) de cada formante, voz femenina/infantil
+VOWELS = {
+    "a": [(850, 90, 1.0), (1220, 100, 0.55), (2810, 140, 0.22), (3500, 180, 0.08)],
+    "o": [(500, 80, 1.0), (880, 90, 0.5), (2830, 140, 0.12), (3500, 180, 0.04)],
+    "u": [(340, 60, 1.0), (780, 90, 0.28), (2700, 140, 0.05), (3300, 180, 0.02)],
+    "l": [(380, 70, 1.0), (1300, 120, 0.22), (2800, 160, 0.08), (3500, 180, 0.03)],
+}
+
+
+def _formant_gain(fr, vowel):
+    g = 0.03
+    for F, B, A in VOWELS[vowel]:
+        g += A / (1 + ((fr - F) / (B / 2)) ** 2)
+    return g
+
+
+def _voice(f, dur, vowel, onset, seed):
+    r = np.random.default_rng(seed)
+    rel = 0.18
+    t = tvec(dur + rel)
+    f = f * 2 ** (r.uniform(-7, 7) / 1200)  # cada cantante un poco desafinado
+    vib_ramp = np.clip((t - 0.12) / 0.35, 0, 1)
+    vib = 1 + 0.0055 * np.sin(2 * np.pi * r.uniform(4.8, 5.8) * t + r.uniform(0, 6)) * vib_ramp
+    drift = 1 + 0.0015 * np.sin(2 * np.pi * r.uniform(0.3, 0.7) * t)
+    phase = 2 * np.pi * np.cumsum(f * vib * drift) / SR
+    w = np.clip(t / 0.07, 0, 1) if onset else np.ones_like(t)
+    s = np.zeros_like(t)
+    for h in range(1, int(5000 / f) + 1):
+        g_v = _formant_gain(h * f, vowel)
+        g = g_v if not onset else _formant_gain(h * f, onset) * (1 - w) + g_v * w
+        s += (g / h ** 0.9) * np.sin(h * phase)
+    # aliento: ruido suave filtrado
+    breath = r.normal(0, 1, len(t))
+    breath = np.convolve(breath, np.ones(8) / 8, "same") - np.convolve(breath, np.ones(40) / 40, "same")
+    s = s / (np.sqrt(np.mean(s ** 2)) + 1e-9) + 0.12 * breath
+    env = np.minimum(1, t / (0.03 if onset else 0.12))
+    if onset:
+        env *= 0.55 + 0.45 * w
+    off = t > dur
+    env[off] *= np.exp(-(t[off] - dur) / 0.06)
+    return s * env * 0.25
+
+
+def choir(t0, n, dur, vowel="a", onset=None, amp=1.0, voices=4, pan=0.0, spread=0.5):
+    f = freq(n)
+    for k in range(voices):
+        seed = int(rng.integers(1 << 30))
+        p = pan + spread * (k / max(1, voices - 1) - 0.5) * 2
+        add(_voice(f, dur, vowel, onset, seed), t0 + rng.uniform(0, 0.018), amp / voices ** 0.5, pan=p)
+
+
 # ---------------------------------------------------------------- armonía
 CHORDS = {
     "G": (["G3", "B3", "D4"], "G2", "D2"),
@@ -209,6 +261,9 @@ for bar, ch in enumerate(intro_prog):
     for n in tones:
         add(strings(n, 4 * intro.spb, attack=0.8), intro.t(b0), 0.11, pan=-0.3)
     add(strings(shift(root, 12), 4 * intro.spb, attack=0.8), intro.t(b0), 0.12, pan=0.0)
+    for n in tones:
+        choir(intro.t(b0), n, 4 * intro.spb * 0.97, "u", amp=0.10, pan=-0.1)
+    choir(intro.t(b0), shift(tones[-1], 12), 4 * intro.spb * 0.97, "u", amp=0.09, pan=0.1)
     arp = [shift(x, 12) for x in tones] + [shift(x, 24) for x in tones]
     arp = (arp + arp[::-1][1:])[:8]
     for k, n in enumerate(arp):
@@ -248,7 +303,11 @@ def jingle_pass(b0, full):
         add(piano(third_below(n), d * 0.9), t, 0.12, pan=-0.15)
         add(celesta(shift(third_below(n), 12)), t, 0.10, pan=0.4)
 
-    voices = [v_glock, v_piano] + ([v_str, v_harm] if full else [])
+    def v_choir(t, n, d):
+        choir(t, n, d * 0.92, "a", onset="l", amp=0.34, pan=0.05, spread=0.6)
+        choir(t, third_below(n), d * 0.92, "a", onset="l", amp=0.20, pan=-0.05, spread=0.6)
+
+    voices = [v_glock, v_piano] + ([v_str, v_harm, v_choir] if full else [])
     play_melody(jb, JB, b0, voices)
 
     # acompañamiento oom-pah
@@ -308,12 +367,21 @@ def wish_pass(b0, full, last=False):
     def v_harm(t, n, d):
         add(piano(third_below(n), d * 0.9), t, 0.11, pan=-0.15)
 
-    end = play_melody(ww, WW, b0, [v_glock, v_piano, v_str] + ([v_harm] if full else []))
+    def v_choir(t, n, d):
+        choir(t, n, d * 0.92, "a", onset="l", amp=0.34, pan=0.05, spread=0.6)
+        choir(t, third_below(n), d * 0.92, "a", onset="l", amp=0.20, pan=-0.05, spread=0.6)
+
+    if full:
+        choir(ww.t(b0 - 1), "D4", ww.spb * 0.9, "a", onset="l", amp=0.34)
+    end = play_melody(ww, WW, b0, [v_glock, v_piano, v_str] + ([v_harm, v_choir] if full else []))
     final_len = 7.5 if last else 3
     # nota final (Sol)
     add(glock("G5"), ww.t(end), 0.32, pan=0.15)
     add(piano("G4", final_len * ww.spb), ww.t(end), 0.22)
     add(strings("G4" if not full else "G5", final_len * ww.spb), ww.t(end), 0.10, pan=-0.25)
+    if full:  # gran acorde final del coro: "laaaa"
+        for n, a in [("G4", 0.34), ("D4", 0.2), ("B3", 0.2), ("G3", 0.18), ("B4", 0.16)]:
+            choir(ww.t(end), n, final_len * ww.spb, "a", onset="l", amp=a, voices=5, spread=0.7)
 
     for bar, changes in enumerate(WW_CH):
         bb = b0 + bar * 3
@@ -333,6 +401,9 @@ def wish_pass(b0, full, last=False):
             if full:
                 for n in tones:
                     add(strings(shift(n, 12), dur_beats * ww.spb, attack=0.25), ww.t(bb + off), 0.045, pan=0.3)
+            elif bar < 7:
+                for n in tones:
+                    choir(ww.t(bb + off), n, dur_beats * ww.spb * 0.95, "o", amp=0.09, pan=0.0, spread=0.7)
         if bar < 7:
             for k in range(3):
                 sleigh(ww.t(bb + k), 0.42 if k == 0 else 0.28)
