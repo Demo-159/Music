@@ -9,6 +9,8 @@ import wave
 
 import numpy as np
 
+import voz
+
 SR = 44100
 rng = np.random.default_rng(25)
 
@@ -223,6 +225,23 @@ def choir(t0, n, dur, vowel="a", onset=None, amp=1.0, voices=4, pan=0.0, spread=
         add(_voice(f, dur, vowel, onset, seed), t0 + rng.uniform(0, 0.018), amp / voices ** 0.5, pan=p)
 
 
+# ---------------------------------------------------------------- letra (dominio público)
+JB_LYR_A = "jin gle bells jin gle bells jin gle all the way".split()
+JB_LYR_B1 = "oh what fun it is to ride in a one horse o pen sleigh hey".split()
+JB_LYR_B2 = "oh what fun it is to ride in a one horse o pen sleigh".split()
+JB_LYR = JB_LYR_A + JB_LYR_B1 + JB_LYR_A + JB_LYR_B2
+WW_LYR = ("wish you a mer ry christ mas we wish you a mer ry christ mas we "
+          "wish you a mer ry christ mas and a hap py new").split()
+
+VOCALS = {"us1": [], "us2": []}  # (t, dur, hz, sílaba)
+
+
+def sing_note(t, n, d, syl, duet):
+    VOCALS["us1"].append((t, d, freq(n), syl))
+    if duet:
+        VOCALS["us2"].append((t, d, freq(shift(n, -12)), syl))
+
+
 # ---------------------------------------------------------------- armonía
 CHORDS = {
     "G": (["G3", "B3", "D4"], "G2", "D2"),
@@ -303,11 +322,12 @@ def jingle_pass(b0, full):
         add(piano(third_below(n), d * 0.9), t, 0.12, pan=-0.15)
         add(celesta(shift(third_below(n), 12)), t, 0.10, pan=0.4)
 
-    def v_choir(t, n, d):
-        choir(t, n, d * 0.92, "a", onset="l", amp=0.34, pan=0.05, spread=0.6)
-        choir(t, third_below(n), d * 0.92, "a", onset="l", amp=0.20, pan=-0.05, spread=0.6)
+    lyr = iter(JB_LYR)
 
-    voices = [v_glock, v_piano] + ([v_str, v_harm, v_choir] if full else [])
+    def v_voice(t, n, d):
+        sing_note(t, n, d, next(lyr), duet=full)
+
+    voices = [v_glock, v_piano, v_voice] + ([v_str, v_harm] if full else [])
     play_melody(jb, JB, b0, voices)
 
     # acompañamiento oom-pah
@@ -322,6 +342,8 @@ def jingle_pass(b0, full):
         if full:
             for n in tones:
                 add(strings(shift(n, 12), 4 * jb.spb, attack=0.3), jb.t(bb), 0.045, pan=0.3)
+            for n in tones:
+                choir(jb.t(bb), shift(n, 12) if n < "C" else n, 4 * jb.spb * 0.97, "a", amp=0.07, spread=0.8)
             if bar % 4 == 0:
                 add(tubular(shift(root, 24) if ch != "G" else "G4"), jb.t(bb), 0.16, pan=-0.4)
         # cascabeles en corcheas con acento
@@ -367,21 +389,22 @@ def wish_pass(b0, full, last=False):
     def v_harm(t, n, d):
         add(piano(third_below(n), d * 0.9), t, 0.11, pan=-0.15)
 
-    def v_choir(t, n, d):
-        choir(t, n, d * 0.92, "a", onset="l", amp=0.34, pan=0.05, spread=0.6)
-        choir(t, third_below(n), d * 0.92, "a", onset="l", amp=0.20, pan=-0.05, spread=0.6)
+    lyr = iter(WW_LYR)
 
-    if full:
-        choir(ww.t(b0 - 1), "D4", ww.spb * 0.9, "a", onset="l", amp=0.34)
-    end = play_melody(ww, WW, b0, [v_glock, v_piano, v_str] + ([v_harm, v_choir] if full else []))
+    def v_voice(t, n, d):
+        sing_note(t, n, d, next(lyr), duet=full)
+
+    sing_note(ww.t(b0 - 1), "D4", ww.spb, "we", duet=full)
+    end = play_melody(ww, WW, b0, [v_glock, v_piano, v_str, v_voice] + ([v_harm] if full else []))
     final_len = 7.5 if last else 3
     # nota final (Sol)
     add(glock("G5"), ww.t(end), 0.32, pan=0.15)
     add(piano("G4", final_len * ww.spb), ww.t(end), 0.22)
     add(strings("G4" if not full else "G5", final_len * ww.spb), ww.t(end), 0.10, pan=-0.25)
-    if full:  # gran acorde final del coro: "laaaa"
-        for n, a in [("G4", 0.34), ("D4", 0.2), ("B3", 0.2), ("G3", 0.18), ("B4", 0.16)]:
-            choir(ww.t(end), n, final_len * ww.spb, "a", onset="l", amp=a, voices=5, spread=0.7)
+    sing_note(ww.t(end), "G4", final_len * ww.spb * 0.9, "year", duet=full)
+    if full:  # gran acorde final del coro: "aaah"
+        for n, a in [("D4", 0.12), ("B3", 0.12), ("G3", 0.1), ("B4", 0.1), ("D5", 0.08)]:
+            choir(ww.t(end), n, final_len * ww.spb, "a", amp=a, voices=5, spread=0.7)
 
     for bar, changes in enumerate(WW_CH):
         bb = b0 + bar * 3
@@ -401,9 +424,11 @@ def wish_pass(b0, full, last=False):
             if full:
                 for n in tones:
                     add(strings(shift(n, 12), dur_beats * ww.spb, attack=0.25), ww.t(bb + off), 0.045, pan=0.3)
+                for n in tones:
+                    choir(ww.t(bb + off), n, dur_beats * ww.spb * 0.95, "a", amp=0.07, spread=0.8)
             elif bar < 7:
                 for n in tones:
-                    choir(ww.t(bb + off), n, dur_beats * ww.spb * 0.95, "o", amp=0.09, pan=0.0, spread=0.7)
+                    choir(ww.t(bb + off), n, dur_beats * ww.spb * 0.95, "o", amp=0.08, pan=0.0, spread=0.7)
         if bar < 7:
             for k in range(3):
                 sleigh(ww.t(bb + k), 0.42 if k == 0 else 0.28)
@@ -423,6 +448,15 @@ for k, n in enumerate(["G4", "D4", "B3", "G3"]):
     add(tubular(n), end_t + 2.6 + k * 0.7, 0.28, pan=-0.3 + 0.2 * k)
 sleigh_shake(end_t + 1.6, 3.0, 0.3)
 add(tubular("G3"), end_t, 0.25)
+
+# ---------------------------------------------------------------- voces cantadas
+VOX_LEVEL = 0.14
+for voice, cents, seed, pan, lvl in [("us1", 0, 1, 0.0, 1.0), ("us1", 9, 2, -0.35, 0.45), ("us1", -8, 3, 0.35, 0.45),
+                                     ("us2", 0, 4, 0.1, 0.75), ("us2", 7, 5, -0.25, 0.3)]:
+    if not VOCALS[voice]:
+        continue
+    delay = rng.uniform(0.005, 0.02) if lvl < 1 else 0.0
+    add(voz.sing(VOCALS[voice], voice=voice, cents=cents, seed=seed), delay, VOX_LEVEL * lvl, pan=pan)
 
 # ---------------------------------------------------------------- reverb + master
 def reverb(x, seconds=2.4, seed=0):
